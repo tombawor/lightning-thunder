@@ -20,7 +20,7 @@ model = model.to(device)
 try:
   prompt = input("Model loaded.\n--> ").strip()
   while not prompt == "":
-    encoded = tokenizer.encode(prompt, bos=True, eos=False, device=device).to(device)
+    encoded = tokenizer.encode(prompt, bos=False, eos=True, device=device)
     prompt_length = encoded.size(0)
 
     max_new_tokens = 256
