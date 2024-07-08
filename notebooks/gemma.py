@@ -1,45 +1,44 @@
 #!python
+
+from pathlib import Path
+
 import torch
 import thunder
 
 import litgpt
-from litgpt import Config, GPT
+from litgpt import Config, GPT, Tokenizer
+from litgpt.generate.base import generate
 
-# cfg = Config.from_name("open_llama_3b", n_layer=2, n_head=8, n_embd=32, intermediate_size=86)
-cfg = Config.from_name("Gemma-2b")
+# open_llama_7b would be better
+cfg = Config.from_name("open_llama_3b")
 
 device = "cpu"
-gemma = GPT(cfg).to(device)
+# gemma = GPT(cfg).to(device)
 
-jitted_gemma = thunder.jit(gemma)
+# Run litgpt download openlm-research/open_llama_3b
 
-x = torch.tensor([[9856, 23, 491, 1536, 304]], dtype=torch.int32, device=device)
-jitted_gemma(x)
+tokenizer = Tokenizer('/Users/mruberry/Documents/git/lightning-thunder/checkpoints/openlm-research/open_llama_3b')
 
-#  model_name="Llama-3-70B",
-#  distributed_mode="fsdp",
-#b = Benchmark_litGPT(
-#  compile="thunder+transformerengine+nvfuser",
-#  low_precision_mode = "fp8-delayed-te",
-#)
-#
-#b.train()
+# Point to .pth file
+state_dict = torch.load('/Users/mruberry/Documents/git/lightning-thunder/checkpoints/openlm-research/open_llama_3b/lit_model.pth')
+model = GPT(cfg)
+model.load_state_dict(state_dict)
+model = model.to(device)
+model.set_kv_cache(batch_size=1)
 
-# cfg: Config = Config.from_name("Llama-2-7b-hf")
-# b = LitGPTBenchmark(
-# #b = NanoGPTBenchmark(
-#   #config="Llama-2-7b-hf",
-#   cfg,
-#   #batchdims=(2,),
-#   device="cuda:0",
-#   dtype=torch.bfloat16,
-#   requires_grad=True,
-# )
+prompt = "What is 5 + 7?"
+encoded = tokenizer.encode(prompt, bos=True, eos=False, device=device)
+prompt_length = encoded.size(0)
 
-# args, kwargs = b.make_batch()
-# fn = thunder.jit(b.fn())
+max_new_tokens = 50
+y = generate(model, encoded, max_new_tokens, top_k=1)
+print(tokenizer.decode(y))
 
-# fn(*args, **kwargs)
+
+th_model = thunder.jit(model)
+y = generate(model, encoded, max_new_tokens, top_k=1)
+print(tokenizer.decode(y))
+
 
 # options
 #  * start by running the 7B run on a second GPU

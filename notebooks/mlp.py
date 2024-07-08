@@ -1,85 +1,80 @@
 #!python
 import time
+
 import torch
 import thunder
-from thunder.benchmarks.benchmark_litgpt import Benchmark_litGPT
-from thunder.benchmarks import LlamaMLPBenchmark
-from thunder.tests.litgpt_model import Config, GPT, Block
+
 from thunder.executors.transformer_engineex import transformer_engine_ex
 from transformer_engine.common import recipe
-from lightning.fabric.plugins.precision.transformer_engine import TransformerEnginePrecision
-import transformer_engine.pytorch as te
-import thunder.executors.torchex
 
-#  model_name="Llama-3-70B",
-#  distributed_mode="fsdp",
-#b = Benchmark_litGPT(
-#  compile="thunder+transformerengine+nvfuser",
-#  low_precision_mode = "fp8-delayed-te",
-#)
-#
-#b.train()
+from litgpt import Config
 
-b = LlamaMLPBenchmark(
-  config="Llama-2-7b-hf",
-  batchdims=(16,),
-  device="cuda:0",
-  dtype=torch.bfloat16,
-  requires_grad=True,
-)
+import torch.nn as nn
+device = "cuda"
+dtype = torch.bfloat16
 
-args, kwargs = b.make_batch()
-eager_fqn = b.fn()
-for i in range(5): eager_fqn(*args, **kwargs)
+# LLaMA MLP module
+class LLaMAMLP(nn.Module):
+    def __init__(self, config: Config) -> None:
+        super().__init__()
+        self.fc_1 = nn.Linear(config.n_embd, config.intermediate_size, bias=config.bias)
+        self.fc_2 = nn.Linear(config.n_embd, config.intermediate_size, bias=config.bias)
+        self.proj = nn.Linear(config.intermediate_size, config.n_embd, bias=config.bias)
+
+        self.config = config
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x_fc_1 = self.fc_1(x)
+        x_fc_2 = self.fc_2(x)
+        x = torch.nn.functional.silu(x_fc_1) * x_fc_2
+        return self.proj(x)
+
+# Contructs the mlp
+config = Config.from_name("open_llama_3b")
+mlp = LLaMAMLP(config).to(device=device, dtype=dtype).requires_grad_(True)
+
+# Generates input
+batch_size = 1 # 16
+shape = (1,) + (config.block_size, config.n_embd)
+x = torch.testing.make_tensor(shape, device=device, dtype=dtype, requires_grad=True)
 torch.cuda.synchronize()
+
+# Runs eagerly
 start_eager = time.time_ns()
-eager_result = eager_fqn(*args, **kwargs)
+eager_result = mlp(x)
 torch.cuda.synchronize()
 end_eager = time.time_ns()
 print(f"eager time: {(end_eager-start_eager) / 1e+6}ms")
-del eager_fqn
 
-torch_fqn = thunder.jit(
-  b.fn(),
-  executors = [thunder.get_executor("torch")]
-)
-torch_fqn(*args, **kwargs) # compile first
+# Runs using default thunder executors (uses nvFuser executor)
+thmlp  = thunder.jit(mlp)
+thmlp(x) # compile first
 torch.cuda.synchronize()
 start_th = time.time_ns()
-torch_fqn(*args, **kwargs)
-torch.cuda.synchronize()
-end_th = time.time_ns()
-print(f"thunder torch-only: {(end_th-start_th) / 1e+6}ms")
-#print(thunder.last_traces(torch_fqn)[-1])
-del torch_fqn
-
-thfqn  = thunder.jit(b.fn())
-thfqn(*args, **kwargs) # compile first
-torch.cuda.synchronize()
-start_th = time.time_ns()
-thfqn(*args, **kwargs)
+thmlp(x)
 torch.cuda.synchronize()
 end_th = time.time_ns()
 print(f"thunder default: {(end_th-start_th) / 1e+6}ms")
-#print(thunder.last_traces(thfqn)[-1])
-del thfqn
+#print(thunder.last_traces(thmlp)[-1])
+del thmlp
 
-
+# Runs using the TransformerEnginer executor
+# (automatically transforms the MLP to use transformer engine layers)
 fp8_recipe = recipe.DelayedScaling(fp8_format=recipe.Format.HYBRID)
 executors = [transformer_engine_ex] + list(thunder.get_default_executors())
-th_te_fqn = thunder.jit(
-  b.fn(),
+te_mlp = thunder.jit(
+  mlp,
   executors=executors,
   fp8_recipe=fp8_recipe,
 )
-th_te_fqn(*args, **kwargs) # compile first
+te_mlp(x) # compile first
 torch.cuda.synchronize()
 start_th = time.time_ns()
-th_te_fqn(*args, **kwargs)
+te_mlp(x)
 torch.cuda.synchronize()
 end_th = time.time_ns()
 print(f"thunder FP8 w/ TE: {(end_th-start_th) / 1e+6}ms")
-#print(thunder.last_traces(th_te_fqn)[-1])
+print(thunder.last_traces(te_mlp)[-1])
 
 
 #def fn(x, w1, w2):
