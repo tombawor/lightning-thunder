@@ -1,11 +1,20 @@
 #!python
 import torch
 import thunder
-from thunder.benchmarks.benchmark_litgpt import Benchmark_litGPT
-#from thunder.benchmarks.targets import benchmark
-from thunder.benchmarks import LitGPTBenchmark
-from thunder.benchmarks import NanoGPTBenchmark
-from thunder.tests.litgpt_model import Config, GPT, Block
+
+import litgpt
+from litgpt import Config, GPT
+
+# cfg = Config.from_name("open_llama_3b", n_layer=2, n_head=8, n_embd=32, intermediate_size=86)
+cfg = Config.from_name("Gemma-2b")
+
+device = "cpu"
+gemma = GPT(cfg).to(device)
+
+jitted_gemma = thunder.jit(gemma)
+
+x = torch.tensor([[9856, 23, 491, 1536, 304]], dtype=torch.int32, device=device)
+jitted_gemma(x)
 
 #  model_name="Llama-3-70B",
 #  distributed_mode="fsdp",
@@ -16,21 +25,21 @@ from thunder.tests.litgpt_model import Config, GPT, Block
 #
 #b.train()
 
-cfg: Config = Config.from_name("Llama-2-7b-hf")
-b = LitGPTBenchmark(
-#b = NanoGPTBenchmark(
-  #config="Llama-2-7b-hf",
-  cfg,
-  #batchdims=(2,),
-  device="cuda:0",
-  dtype=torch.bfloat16,
-  requires_grad=True,
-)
+# cfg: Config = Config.from_name("Llama-2-7b-hf")
+# b = LitGPTBenchmark(
+# #b = NanoGPTBenchmark(
+#   #config="Llama-2-7b-hf",
+#   cfg,
+#   #batchdims=(2,),
+#   device="cuda:0",
+#   dtype=torch.bfloat16,
+#   requires_grad=True,
+# )
 
-args, kwargs = b.make_batch()
-fn = thunder.jit(b.fn())
+# args, kwargs = b.make_batch()
+# fn = thunder.jit(b.fn())
 
-fn(*args, **kwargs)
+# fn(*args, **kwargs)
 
 # options
 #  * start by running the 7B run on a second GPU
