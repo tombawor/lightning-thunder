@@ -33,4 +33,4 @@ try:
 
     prompt = input("--> ").strip()
 except EOFError:
-  pass
+  print("")
