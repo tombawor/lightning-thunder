@@ -8,7 +8,7 @@ from litgpt.generate.base import generate
 
 cfg = Config.from_name("open_llama_7b")
 
-model_path = Path("checkpoints/openlm-research/open_llama_7b")
+model_path = Path("../../../checkpoints/openlm-research/open_llama_7b")
 tokenizer = Tokenizer(model_path)
 state_dict = torch.load(model_path / "lit_model.pth", weights_only=False)
 device = torch.device("cuda:7")
