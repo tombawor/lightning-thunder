@@ -312,6 +312,11 @@ def jit(
         warnings.warn("outdated argument executors_list= in call, please use executors=")
         if executors is None:
             executors = compile_options.pop("executors_list")
+    if "fp8_recipe" in compile_options:
+        te = thunder.extend.get_executor("transformer_engine")
+        if executors is None:
+          executors = list(get_default_executors())
+        executors = [te] + executors
 
     # Resolves interpreter option
     interpretation = resolve_interpretation_option(interpretation)
