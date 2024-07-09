@@ -50,25 +50,38 @@ def benchmark(fqn: callable) -> float:
 # First run eager mode to establish a baseline:
 eager_runtime = benchmark(mlp)
 print(f"eager: {eager_runtime}ms")
-del eager_runtime
 
 # Runs using default thunder executors (uses nvFuser executor)
-thmlp  = thunder.jit(mlp)
+thmlp = thunder.jit(mlp)
 th_default_runtime = benchmark(thmlp)
 print(f"thunder default: {th_default_runtime}ms")
+th_trace = thunder.last_traces(thmlp)[-1]
 del thmlp
-del th_default_runtime
+input("Waiting... ")
+print("""
+  self.fc_1 = nn.Linear(n_embd, intermediate_size, bias=bias)
+  self.fc_2 = nn.Linear(n_embd, intermediate_size, bias=bias)
+  self.proj = nn.Linear(intermediate_size, n_embd, bias=bias)
+  ...
+  x_fc_1 = self.fc_1(x)
+  x_fc_2 = self.fc_2(x)
+  x = torch.nn.functional.silu(x_fc_1) * x_fc_2
+  return self.proj(x)
+""")
+input("")
+print(th_trace)
 
 # Runs using the TransformerEnginer executor
 # (automatically transforms the MLP to use transformer engine layers)
 fp8_recipe = recipe.DelayedScaling(fp8_format=recipe.Format.HYBRID)
-executors = [transformer_engine_ex] + list(thunder.get_default_executors())
-te_mlp = thunder.jit(
-  mlp,
-  executors=executors,
-  fp8_recipe=fp8_recipe,
-)
+te_mlp = thunder.jit(mlp, fp8_recipe=fp8_recipe)
 th_fp8_runtime = benchmark(te_mlp)
-print(f"thunder with TransformerEngine: {th_fp8_runtime}")
+fp8_trace = thunder.last_traces(te_mlp)[-1]
+input("")
+print(fp8_trace)
+input("")
+print(f"eager: {eager_runtime}ms")
+print(f"thunder default: {th_default_runtime}ms")
+print(f"thunder with TransformerEngine: {th_fp8_runtime}ms")
 del te_mlp
 del th_fp8_runtime

@@ -787,6 +787,10 @@ def last_traces(fn) -> list[TraceCtx]:
     return cs.last_traces
 
 
+def last_trace(fn) -> TraceCtx:
+    return last_traces(fn)[-1]
+
+
 def last_backward_traces(fn) -> list[TraceCtx]:
     """Obtains the list of backward traces that have been produced for the last run of the function and the selected prologue."""
     cs = compile_stats(fn)
