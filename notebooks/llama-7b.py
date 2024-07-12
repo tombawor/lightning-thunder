@@ -7,40 +7,30 @@ from thunder.benchmarks import LitGPTBenchmark
 from thunder.benchmarks import NanoGPTBenchmark
 from thunder.tests.litgpt_model import Config, GPT, Block
 
-#  model_name="Llama-3-70B",
-#  distributed_mode="fsdp",
-#b = Benchmark_litGPT(
-#  compile="thunder+transformerengine+nvfuser",
-#  low_precision_mode = "fp8-delayed-te",
-#)
-#
-#b.train()
-
 cfg: Config = Config.from_name("Llama-2-7b-hf")
 b = LitGPTBenchmark(
-#b = NanoGPTBenchmark(
-  #config="Llama-2-7b-hf",
   cfg,
-  #batchdims=(2,),
-  device="cuda:0",
+  batchdims=(2,),
+  device="cuda",
   dtype=torch.bfloat16,
   requires_grad=True,
 )
 
 args, kwargs = b.make_batch()
-fn = thunder.jit(b.fn())
+th_fqn = thunder.jit(b.fn())
 
-fn(*args, **kwargs)
+def benchmark(fqn: callable) -> float:
+  """Returns the time (in ms) to run the given function)"""
+  for i in range(3):  # do a few warmup runs (for stable timings)
+    foo = fqn(*args, **kwargs)
+  torch.cuda.synchronize()
+  start = time.time_ns()
+  fqn(*args, **kwargs)
+  torch.cuda.synchronize()
+  end = time.time_ns()
+  return ((end - start) / 1e+6)
 
-# options
-#  * start by running the 7B run on a second GPU
-#  * start with just an MLP
-#    * show it executing with thunder
-#  * here's how to do the same thing in t.c
-#  * then:
-#    * add in TE
-#    * show the traces in both cases, highlight included TE
-#  * go back to the initial run of the 7B. three options:
-#    * eager running it
-#    * thunder
-#    * thunder + TE
+eager_rt = benchmark(b.fn())
+thunder_rt = benchmark(th_fqn)
+
+print(f"Eager: {eager_rt}, thunder: {thunder_rt}")

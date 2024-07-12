@@ -49,6 +49,7 @@ def benchmark(fqn: callable) -> float:
 
 # First run eager mode to establish a baseline:
 eager_runtime = benchmark(mlp)
+input("")
 print(f"eager: {eager_runtime}ms")
 
 # Runs using default thunder executors (uses nvFuser executor)
@@ -71,9 +72,9 @@ print("""
 input("")
 print(th_trace)
 
-# Runs using the TransformerEnginer executor
+# Runs using the TransformerEngine executor
 # (automatically transforms the MLP to use transformer engine layers)
-fp8_recipe = recipe.DelayedScaling(fp8_format=recipe.Format.HYBRID)
+fp8_recipe = recipe.DelayedScaling()
 te_mlp = thunder.jit(mlp, fp8_recipe=fp8_recipe)
 th_fp8_runtime = benchmark(te_mlp)
 fp8_trace = thunder.last_traces(te_mlp)[-1]
