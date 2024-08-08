@@ -1185,7 +1185,7 @@ def pack_buffer_impl(o: Any, key: Any, v: Any) -> None:
 
 pack_buffer = make_prim(
     PrimIDs.PACK_BUFFER,
-    "unpack_buffer",
+    "pack_buffer",
     meta=pack_buffer_meta,
     python_printer=pack_buffer_printer,
     python_impl=pack_buffer_impl,

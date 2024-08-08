@@ -55,7 +55,7 @@ def _check_tensor_shape_and_metadata_impl(
 
 
 check_tensor_shape_and_metadata = ex.register_operator(
-    "check_tensor_metadata", like=prims.check_tensor_shape_and_metadata, fn=_check_tensor_shape_and_metadata_impl
+    "check_tensor_shape_and_metadata", like=prims.check_tensor_shape_and_metadata, fn=_check_tensor_shape_and_metadata_impl
 )
 ex.register_implementation(
     prims.check_tensor_shape_and_metadata, check_tensor_shape_and_metadata, checker=_always_executable
