@@ -16,6 +16,8 @@ import torch
 
 import thunder.core.dtypes as dtypes
 import thunder.torch as ltorch
+from thunder.torch import TensorLike
+
 from thunder.core import prims, utils
 from thunder.core.baseutils import BoundSymbolInterface
 from thunder.core.prims import PrimIDs
@@ -41,9 +43,22 @@ from thunder.core.transform_common import dce, cse_single_bsym, replace_redundan
 from thunder.core.profile import add_markers
 from thunder.core.compile_data import get_compile_option
 
-from thunder.executors.utils import Region
+from thunder.core.transforms import (
+    get_grad,
+    put_grads,
+)
+
+from thunder.executors.utils import (
+    Region,
+    _input_dtype_check_fused_scaled_dot_product_attention,
+    _input_shape_check_fused_scaled_dot_product_attention,
+    _fused_sdp_choice,
+    SpdaBackend,
+)
+
 from thunder.executors.passes import update_fusion_call_ctx
 from thunder.extend import FUEL_LEVEL, FusionExecutor, register_executor, add_default_executor
+from thunder.executors.nvfuserex import nvfuser_version
 
 # NOTE This impl file is here because nvFuser may not be available, so it's imported conditionally
 #   by nvfuserex.py when nvFuser is available.
@@ -383,10 +398,15 @@ class FusionDefinitionWrapper:
     cache_info: None | Callable = None
     cache_clear: None | Callable = None
     last_used: None | FusionDefinition = None
+    last_inputs: None | Sequence[tuple] = None
+    store_inputs: bool = False
 
     def __call__(self, *args):
         fd = self.get_fd(to_descriptors(args))
         self.last_used = fd
+
+        if self.store_inputs:
+            self.last_inputs = args
 
         # Set device if set in one of the "factory" methods like full, iota, or uniform
         kwargs = {"device": fd._selected_device} if hasattr(fd, "_selected_device") else {}
@@ -479,6 +499,9 @@ def create_fusion_definition_wrapper(
     #   objects is captured by names in the trace.
     # These properties are distinct from the inputs and outputs to the trace itself, which
     #   may contain duplicates and whose order must be preserved.
+    store_inputs: None | bool = get_compile_option(
+        "nv_store_fusion_inputs", "Allow nvFuser to store fusion inputs for repro."
+    )
 
     tensor_indices = []
     for idx, x in enumerate(sorted_unique_inputs):
@@ -493,7 +516,7 @@ def create_fusion_definition_wrapper(
         # A closure over local trace and region
         return create_fd(bsyms, input_descriptors, sorted_unique_inputs, sorted_unique_outputs)
 
-    fdw = FusionDefinitionWrapper(get_fd, name, get_fd.cache_info, get_fd.cache_clear)
+    fdw = FusionDefinitionWrapper(get_fd, name, get_fd.cache_info, get_fd.cache_clear, store_inputs=store_inputs)
     return fdw
 
 
@@ -611,11 +634,8 @@ class nvFuserExecutor(FusionExecutor):
         return list(filter(lambda x: x.sym != prims.python_return, trace.bound_symbols))
 
     def fuse(self, region: Region, fusion_counter: int) -> BoundSymbol:
-        def keyfn(x: Variable) -> str:
-            return x.proxy.name
-
-        sorted_unique_inputs: list[Proxy] = list(unvariableify(x) for x in sorted(region.inputs, key=keyfn))
-        sorted_unique_outputs: list[Proxy] = list(unvariableify(x) for x in sorted(region.outputs, key=keyfn))
+        sorted_unique_inputs: list[Proxy] = [unvariableify(x) for x in region.inputs]
+        sorted_unique_outputs: list[Proxy] = [unvariableify(x) for x in region.outputs]
 
         flattened_bsyms: list[BoundSymbol] = []
         for bsym in region.bound_symbols:
@@ -820,19 +840,6 @@ instantiated) this heuristic actually leads to worse code.
                 else:
                     fused_bsyms.extend(fusion.bound_symbols)
             fused_bsyms.extend(epilogue)
-
-        # Force return operator to be the last one in the fused_bsyms
-        if fused_bsyms[-1].sym.id != PrimIDs.RETURN:
-            return_idx: int = -1
-            for i, fused_bsym in enumerate(fused_bsyms):
-                if fused_bsym.sym.id == PrimIDs.RETURN:
-                    return_idx = i
-                    break
-            utils.check(
-                return_idx != -1,
-                lambda: f"Return operator does not exist in bound symbols",
-            )
-            fused_bsyms.append(fused_bsyms.pop(return_idx))
 
         fusedtrace.bound_symbols = fused_bsyms
 
@@ -2211,3 +2218,227 @@ def matmul(
 
 
 register_supported(PrimIDs.MATMUL, matmul, _matmul_check)
+
+
+# Registering SDPA operators for nvFuser
+# SDPA requires an execution and grad transform since the forward and backward passes are called through different implementations.
+# For both execution and grad transform, a new operator is registered with nvfuserex (ex.register_operator) and then added to the translation map (register_supported).
+# The operators are tagged with OpTag.RANDOM_OP to prevent rematerialization in backward pass.
+# Finally, the complete rule is registered through ex.register_supported, with the execution and grad transform wrapping around these operators.
+
+
+# SDPA Forward
+def _scaled_dot_product_flash_attention_forward_meta(
+    query: TensorLike,
+    key: TensorLike,
+    value: TensorLike,
+    dropout_p: float = 0.0,
+    is_causal: bool = False,
+    *,
+    scale: None | float = None,
+) -> tuple[TensorProxy, TensorProxy, int, int]:
+    # Reference metadata:
+    # https://github.com/pytorch/pytorch/blob/main/torch/_meta_registrations.py
+    # * query (batch_size, num_heads, query_seq_len, E)
+    # * key (batch_size, num_heads, key_seq_len, E)
+    # * value (batch_size, num_heads, key_seq_len, Ev)
+    # * output (batch_size, num_heads, query_seq_len, Ev)
+
+    batch_size, num_heads, query_seq_len, E = query.shape
+    key_seq_len = key.shape[2]
+
+    return (
+        output := TensorProxy(like=query, shape=(batch_size, num_heads, query_seq_len, E)),
+        log_sumexp := TensorProxy(
+            shape=(batch_size, num_heads, query_seq_len), dtype=dtypes.float32, device=query.device, requires_grad=False
+        ),
+        philox_seed := TensorProxy(shape=(), dtype=dtypes.int64, device=query.device, requires_grad=False),
+        philox_offset := TensorProxy(shape=(), dtype=dtypes.int64, device=query.device, requires_grad=False),
+    )
+
+
+def _scaled_dot_product_flash_attention_forward(
+    query: TensorProxy,
+    key: TensorProxy,
+    value: TensorProxy,
+    dropout_p: float = 0.0,
+    is_causal: bool = False,
+    *,
+    scale: None | float = None,
+    fd: FusionDefinition,
+    lc_to_nv_map: dict,
+) -> Any:
+
+    inputs = [query, key, value, dropout_p, is_causal, scale]
+    nv_inputs = []
+    for inp in inputs:
+        nv_inp = getnv(inp, fd, lc_to_nv_map) if inp is not None else None
+        nv_inputs.append(nv_inp)
+
+    return fd.ops.sdpfa_fwd(*nv_inputs)
+
+
+nv_sdpfa_fwd = ex.register_operator(
+    "nv_sdpfa_fwd",
+    meta=_scaled_dot_product_flash_attention_forward_meta,
+    fn=_scaled_dot_product_flash_attention_forward,
+    tags=[prims.OpTags.RANDOM_OP],
+)
+
+register_supported(nv_sdpfa_fwd.id, _scaled_dot_product_flash_attention_forward, None)
+
+
+# SDPA Backward
+def _scaled_dot_product_flash_attention_backward_meta(
+    grad_out: TensorLike,
+    query: TensorLike,
+    key: TensorLike,
+    value: TensorLike,
+    out: TensorLike,
+    logsumexp: TensorLike,
+    dropout_p: float,
+    is_causal: bool,
+    philox_seed: TensorLike,
+    philox_offset: TensorLike,
+    *,
+    scale: None | float = None,
+) -> tuple[TensorProxy, TensorProxy, TensorProxy]:
+
+    batch_size, num_heads, query_seq_len, E = query.shape
+    key_seq_len = key.shape[2]
+
+    # Reference metadata:
+    # https://github.com/pytorch/pytorch/blob/main/torch/_meta_registrations.py#L4907-L4956
+    grad_query = TensorProxy(like=query, shape=(batch_size, num_heads, query_seq_len, E))
+    grad_key = TensorProxy(like=key, shape=(batch_size, num_heads, key_seq_len, E))
+    grad_value = TensorProxy(like=value, shape=(batch_size, num_heads, key_seq_len, E))
+    return (grad_query, grad_key, grad_value)
+
+
+def _scaled_dot_product_flash_attention_backward(
+    grad_out: TensorProxy,
+    query: TensorProxy,
+    key: TensorProxy,
+    value: TensorProxy,
+    out: TensorProxy,
+    logsumexp: TensorProxy,
+    dropout_p: float,
+    is_causal: bool,
+    philox_seed: TensorProxy,
+    philox_offset: TensorProxy,
+    *,
+    scale: None | float = None,
+    fd: FusionDefinition,
+    lc_to_nv_map: dict,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+
+    inputs = [grad_out, query, key, value, out, logsumexp, dropout_p, is_causal, philox_seed, philox_offset, scale]
+    nv_inputs = []
+    for inp in inputs:
+        nv_inp = getnv(inp, fd, lc_to_nv_map) if inp is not None else None
+        nv_inputs.append(nv_inp)
+
+    return fd.ops.sdpfa_bwd(*nv_inputs)
+
+
+nv_sdpfa_bwd = ex.register_operator(
+    "nv_sdpfa_bwd",
+    meta=_scaled_dot_product_flash_attention_backward_meta,
+    fn=_scaled_dot_product_flash_attention_backward,
+    tags=[prims.OpTags.RANDOM_OP],
+)
+
+register_supported(nv_sdpfa_bwd.id, _scaled_dot_product_flash_attention_backward, None)
+
+
+# Checker for SDPA
+def _scaled_dot_product_flash_attention_check(
+    query: Proxy,
+    key: Proxy,
+    value: Proxy,
+    attn_mask: Proxy | None,
+    dropout_p: float,
+    is_causal: bool,
+    *,
+    scale: None | float = None,
+) -> bool:
+
+    # fd.ops.sdpfa_fwd and fd.ops.sdpfa_bwd are adding in versions 0.2.9 and 0.2.10 respectively.
+    if nvfuser_version() < LooseVersion("0.2.10"):
+        return False
+
+    enable_sdpa: None | bool = get_compile_option("nv_enable_sdpa", "Enable nvFuser flash attention SDPA.")
+
+    if not enable_sdpa:
+        return False
+
+    if not are_supported_tensors(query, key, value):
+        return False
+
+    # FP64 is not supported by flash attention
+    supported_dtypes = (dtypes.float16, dtypes.bfloat16)
+    _input_dtype_check_fused_scaled_dot_product_attention(query, key, value, attn_mask := None, supported_dtypes)
+    _input_shape_check_fused_scaled_dot_product_attention(query, key, value, attn_mask := None)
+
+    # nvFuser only implements flash attention currently.
+    backend = _fused_sdp_choice(query, key, value, None, dropout_p, is_causal, scale)
+    return backend == SpdaBackend.FLASH_ATTENTION
+
+
+# SDPA execution_transform -- calls nv_sdpfa_fwd operator registered above
+def scaled_dot_product_flash_attention(
+    query: TensorProxy,
+    key: TensorProxy,
+    value: TensorProxy,
+    attn_mask: TensorProxy = None,
+    dropout_p: float = 0.0,
+    is_causal: bool = False,
+    *,
+    scale: None | float = None,
+):
+    (attn_output, logsumexp, philox_seed, philox_offset) = nv_sdpfa_fwd(
+        query, key, value, dropout_p, is_causal, scale=scale
+    )
+    return attn_output
+
+
+# SDPA grad_transform -- calls nv_sdpfa_fwd and nv_sdpfa_bwd registered above
+def scaled_dot_product_flash_attention_grad(
+    query: Proxy,
+    key: Proxy,
+    value: Proxy,
+    attn_mask: None | Proxy,
+    dropout_p: float = 0.0,
+    is_causal: bool = False,
+    *,
+    scale: None | float = None,
+):
+
+    (attn_output, logsumexp, philox_seed, philox_offset) = nv_sdpfa_fwd(
+        query, key, value, dropout_p, is_causal, scale=scale
+    )
+    grad_out = get_grad(attn_output)
+    grad_query, grad_key, grad_val = nv_sdpfa_bwd(
+        grad_out,
+        query,
+        key,
+        value,
+        attn_output,
+        logsumexp,
+        dropout_p,
+        is_causal,
+        philox_seed,
+        philox_offset,
+        scale=scale,
+    )
+    put_grads((query, key, value), (grad_query, grad_key, grad_val))
+    return attn_output
+
+
+# Register the complete rule for SDPA in nvfuser executor
+ex.register_supported(
+    ltorch.scaled_dot_product_attention,
+    checker=_scaled_dot_product_flash_attention_check,
+    execution_transform=scaled_dot_product_flash_attention,
+    grad_transform=scaled_dot_product_flash_attention_grad,
+)
