@@ -17,6 +17,7 @@ import megatron.core.parallel_state as ps
 from megatron.core.tensor_parallel.random import model_parallel_cuda_manual_seed
 from megatron.core.utils import init_method_normal, scaled_init_method_normal, make_viewless_tensor
 
+# Config extracted from running NeMo with instructions: https://github.com/Lightning-AI/lightning-thunder/issues/343
 transformer_config = TransformerConfig(
     tensor_model_parallel_size=1,
     pipeline_model_parallel_size=1,
@@ -170,7 +171,7 @@ def _test_megatron_transformer_block(input_data):
 
     attention_mask = torch.ones((1, 1, 4096, 4096), dtype=bool).cuda()
 
-    #Comment this function out to repro https://github.com/Lightning-AI/lightning-thunder/issues/753
+    # Comment this function out to repro https://github.com/Lightning-AI/lightning-thunder/issues/753
     @thunder.core.jit_ext.register_general_jit_lookaside(make_viewless_tensor)
     @thunder.core.jit_ext.interpreter_needs_wrap
     def make_viewless_tensor_lookaside(inp, requires_grad, keep_graph):
@@ -181,7 +182,7 @@ def _test_megatron_transformer_block(input_data):
         hidden_states = jblock(hidden_states=hidden_states, attention_mask=attention_mask)
     except Exception as e:
         if rank == 0:
-            print(traceback.format_exception(e))
+            print(*traceback.format_exception(e))
             exception_list.append(e)
 
     return exception_list
