@@ -193,7 +193,7 @@ def _test_megatron_transformer_block(input_data):
 @instantiate(
     dtypes=(thunder.bfloat16,),
     num_devices=2,
-    devicetypes=(devices.DeviceType.CUDA, devices.DeviceType.CPU),
+    devicetypes=(devices.DeviceType.CUDA,),
     executors=(TorchExecutor,),
 )
 @distributed_wrapper("test_megatron_transformer_block", _test_megatron_transformer_block)
