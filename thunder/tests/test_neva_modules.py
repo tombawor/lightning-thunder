@@ -140,6 +140,22 @@ transformer_config = TransformerConfig(
 )
 
 
+def init_megatron_module_test(input_data):
+    ps.destroy_model_parallel()
+    init_method, world_size, rank, executor, device, dtype, kwargs = input_data
+    devicetype = devices.device_from_string(device).devicetype
+
+    pg = init_per_process_distributed(init_method, devicetype, world_size, rank)
+
+    torch.distributed.barrier(pg)
+
+    ps.initialize_model_parallel(1, 1, None)
+    model_parallel_cuda_manual_seed(0)
+
+    return init_method, world_size, rank, executor, device, dtype, kwargs
+
+
+
 def _test_megatron_transformer_block(input_data):
     init_method, world_size, rank, executor, device, dtype, kwargs = init_megatron_module_test(input_data)
     device = devices.device_from_string(device).type
