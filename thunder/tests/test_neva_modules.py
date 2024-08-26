@@ -1,3 +1,4 @@
+import traceback
 import torch
 import torch.distributed
 
@@ -5,6 +6,7 @@ import thunder
 from thunder.core import devices
 from thunder.tests.distributed.helper import init_per_process_distributed, distributed_wrapper
 from thunder.tests.framework import instantiate, TorchExecutor
+import thunder.torch as tt
 
 from megatron.core.transformer import TransformerConfig
 from megatron.core.transformer.transformer_block import TransformerBlock
@@ -160,13 +162,13 @@ def init_megatron_module_test(input_data):
 def _test_megatron_transformer_block(input_data):
     init_method, world_size, rank, executor, device, dtype, kwargs = init_megatron_module_test(input_data)
     device = devices.device_from_string(device).type
-    import traceback
+    tdtype = tt.to_torch_dtype(dtype)
 
     block = TransformerBlock(transformer_config, get_gpt_layer_with_transformer_engine_spec())
 
     block.to(device)
     jblock = thunder.jit(block)
-    hidden_states = torch.ones((4096, 1, transformer_config.hidden_size))
+    hidden_states = torch.ones((4096, 1, transformer_config.hidden_size), dtype=tdtype)
     hidden_states = hidden_states.cuda()
 
     attention_mask = torch.ones((1, 1, 4096, 4096), dtype=bool).cuda()
