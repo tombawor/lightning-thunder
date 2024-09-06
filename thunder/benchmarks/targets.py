@@ -828,7 +828,7 @@ def test_resnet50(benchmark, executor: Callable, compute_type: ComputeType):
     ),
 )
 def test_dynamo_LlamaMLPBenchmark(benchmark, executor: Callable):
-    backend = DynamoBackendBenchmarking(benchmark, executor)
+    backend = DynamoBackendBenchmarking(benchmark, [executor])
 
     bench: Benchmark = LlamaMLPBenchmark(
         config="Llama-2-7b-hf",
