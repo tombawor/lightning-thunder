@@ -1295,6 +1295,9 @@ class LitGPTSwigluBenchmark(Benchmark, metaclass=UserFacingBenchmarkMeta):
         self.batchdims = batchdims
         intermediate_size = self.config.intermediate_size if not merged_input else self.config.intermediate_size * 2
         self.shape: Sequence[int] = batchdims + (self.config.block_size, intermediate_size)
+        if merged_input:
+            # For some reason, this is the format that the Liger SiLU Mul Merged Input function expects
+            self.shape = (self.config.block_size, batchdims[0], self.config.intermediate_size * 2)
         self.device: str = device
         self.dtype: dtypes.dtype = dtype
         self.tdtype: torch.dtype = ltorch.to_torch_dtype(dtype)
