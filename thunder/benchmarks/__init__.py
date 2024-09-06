@@ -1320,7 +1320,8 @@ class LitGPTSwigluBenchmark(Benchmark, metaclass=UserFacingBenchmarkMeta):
 
         if self.merged_input:
             def fn(x_fc_1_fc2):
-                x_fc_1, x_fc_2 = torch.chunk(x_fc_1_fc2, 2, dim=-1)
+                x_fc_1, x_fc_2 = torch.split(x_fc_1_fc2, self.config.intermediate_size, dim=-1)
+                # x_fc_1, x_fc_2 = torch.chunk(x_fc_1_fc2, 2, dim=-1)
                 return torch.nn.functional.silu(x_fc_1) * x_fc_2
 
         if self.use_liger:
