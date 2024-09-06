@@ -1287,20 +1287,27 @@ class LitGPTSwigluBenchmark(Benchmark, metaclass=UserFacingBenchmarkMeta):
         dtype: dtypes.dtype,
         requires_grad: bool,
         use_liger: bool = False,
+        merged_input: bool = False,
     ) -> None:
         super().__init__()
 
         self.config = LitGPTConfig.from_name(config) if not isinstance(config, LitGPTConfig) else config
         self.batchdims = batchdims
-        self.shape: Sequence[int] = batchdims + (self.config.block_size, self.config.intermediate_size)
+        intermediate_size = self.config.intermediate_size if not merged_input else self.config.intermediate_size * 2
+        self.shape: Sequence[int] = batchdims + (self.config.block_size, intermediate_size)
         self.device: str = device
         self.dtype: dtypes.dtype = dtype
         self.tdtype: torch.dtype = ltorch.to_torch_dtype(dtype)
         self.requires_grad: bool = requires_grad
         self.devices: list[str] = [device]
         self.use_liger: bool = use_liger
+        self.merged_input: bool = merged_input
 
     def make_batch(self) -> tuple[list, dict]:
+        if self.merged_input:
+            return (
+                make_tensor(self.shape, device=self.device, dtype=self.tdtype, requires_grad=self.requires_grad),
+            ), {}
         return (
             make_tensor(self.shape, device=self.device, dtype=self.tdtype, requires_grad=self.requires_grad),
             make_tensor(self.shape, device=self.device, dtype=self.tdtype, requires_grad=self.requires_grad),
@@ -1310,6 +1317,11 @@ class LitGPTSwigluBenchmark(Benchmark, metaclass=UserFacingBenchmarkMeta):
         # https://github.com/Lightning-AI/litgpt/blob/fdf6a120056d1363287285599eb84907f6c589b9/litgpt/model.py#L372
         def fn(x_fc_1, x_fc_2):
             return torch.nn.functional.silu(x_fc_1) * x_fc_2
+
+        if self.merged_input:
+            def fn(x_fc_1_fc2):
+                x_fc_1, x_fc_2 = torch.chunk(x_fc_1_fc2, 2, dim=-1)
+                return torch.nn.functional.silu(x_fc_1) * x_fc_2
 
         if self.use_liger:
             try:

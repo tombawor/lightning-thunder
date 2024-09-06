@@ -262,11 +262,16 @@ swiglu_executors_ids = (
 
 
 # Sample command to run this benchmark:
-# pytest thunder/benchmarks/targets.py -k "test_litgpt_swiglu" --benchmark-group-by='param:config,param:bs,param:compute_type'
+# pytest thunder/benchmarks/targets.py -k "test_litgpt_swiglu" --benchmark-group-by='param:config,param:bs,param:compute_type,param:merged_input'
 @pytest.mark.parametrize(
     "executor,use_liger,",
     swiglu_executors,
     ids=swiglu_executors_ids,
+)
+@pytest.mark.parametrize(
+    "merged_input",
+    (False, True),
+    ids=("split_input", "merged_input"),
 )
 # bs = batch size
 # It's typically small for LLMs
@@ -280,7 +285,7 @@ swiglu_executors_ids = (
     "config,",
     get_configs_for_swiglu(),
 )
-def test_litgpt_swiglu(benchmark, executor: Callable, use_liger: bool, bs: int, compute_type: ComputeType, config: str):
+def test_litgpt_swiglu(benchmark, executor: Callable, use_liger: bool, merged_input: bool, bs: int, compute_type: ComputeType, config: str):
     if use_liger and not LIGER_FUSED_SWIGLU_AVAILABLE:
         pytest.skip("Liger fused swiglu is unavailable")
 
@@ -291,6 +296,7 @@ def test_litgpt_swiglu(benchmark, executor: Callable, use_liger: bool, bs: int, 
         dtype=thunder.bfloat16,
         requires_grad=is_requires_grad(compute_type),
         use_liger=use_liger,
+        merged_input=merged_input,
     )
 
     args, kwargs = bench.make_batch()
