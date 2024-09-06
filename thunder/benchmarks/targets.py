@@ -814,14 +814,11 @@ def test_resnet50(benchmark, executor: Callable, compute_type: ComputeType):
     fn = executor(b.fn())
 
     benchmark_for_compute_type(compute_type, benchmark, fn, args, kwargs)
+
+
 @pytest.mark.parametrize(
     "executor,",
     (
-        torch_executor,
-        torch_compile_without_reset_executor,
-        thunder_executor,
-    ),
-    ids=(
         "torch",
         "torch.compile",
         "thunder",
