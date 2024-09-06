@@ -922,11 +922,43 @@ def _warn_custom_autograd_function():
 def _general_jit_torch_autograd_function_apply_lookaside(obj: Any, *args, **kwargs):
     _warn_custom_autograd_function()
 
+    jit_ctx: GeneralJitCtx = get_general_jit_ctx()
+    bsyms_of_custom_forward: list[BoundSymbol] = []
+    cur_scopes = jit_ctx.computation_trace.scopes
+    jit_ctx.computation_trace.scopes = [bsyms_of_custom_forward]
+
     custom_autograd_function_cls = unwrap(obj)
     custom_forward = custom_autograd_function_cls.forward
     ctx = torch.autograd.function.FunctionCtx()
     wrapped_ctx = wrap_const(ctx)
-    return _interpret_call(custom_forward, wrapped_ctx, *args, **kwargs)
+    result = _interpret_call(custom_forward, wrapped_ctx, *args, **kwargs)
+    unwrapped_result = unwrap(result)
+
+    @wraps(custom_forward)
+    def meta_custom_forward(*args, **kwargs):
+        return unwrapped_result
+
+    custom_forward_symbol = Symbol(
+        name=custom_autograd_function_cls.__name__,
+        id=custom_autograd_function_cls.__name__,
+        meta=meta_custom_forward,
+        _module=bsyms_of_custom_forward[-1].sym.module,
+    )
+    custom_forward_bsym = BoundSymbol(
+        custom_forward_symbol,
+        args=(ctx,) + tuple(unwrap(a) for a in args),
+        kwargs=tree_map(lambda a: unwrap(a), kwargs),
+        output=unwrapped_result,
+        subsymbols=bsyms_of_custom_forward,
+    )
+    cur_scopes[-1].append(custom_forward_bsym)
+    jit_ctx.computation_trace.scopes = cur_scopes
+
+    # TODO(crcrpar): Peruse custom forward to collect residuals of `VJPDual`
+    # and then define and register augmented forward and backward to
+    # `thunder.core.transforms.augmented_forward_impls` and `thunder.core.transforms.backward_impls`.
+
+    return result
 
 
 @register_general_jit_lookaside(torch.finfo)
