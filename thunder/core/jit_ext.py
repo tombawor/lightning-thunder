@@ -381,7 +381,7 @@ def record_source_loc_in_symbol_header(fn):
     @wraps(fn)
     def wrapper(*args, **kwargs):
         runtimectx: Interpreterruntimectx = get_interpreterruntimectx()
-        filename, positions = runtimectx.get_current_user_source_location()
+        filename, positions = runtimectx().get_current_user_source_location()
         ctx: JitCtx = get_jit_ctx()
         ctx._computation_trace.set_current_source_location(filename, positions)
         return fn(*args, **kwargs)
@@ -927,7 +927,7 @@ def _maybe_update_proxy_name(orig_value: Any, name: str, is_internal: bool | Non
 
     if is_internal is None:
         runtimectx: Interpreterruntimectx = get_interpreterruntimectx()
-        frame = runtimectx.peek_frame_stack()
+        frame = runtimectx().peek_frame_stack()
         assert frame is not None  # pass is_internal if you call this before the frame is set up
         is_internal = frame.module in {"thunder.core.interpreter", "thunder.core.jit_ext"}
 

@@ -158,7 +158,7 @@ class WrappedValue:
         if self.provenance.inst == PseudoInst.CONSTANT:
             self.provenance.value = value
 
-        runtimectx.cache_wrapper(self)
+        runtimectx().cache_wrapper(self)
 
         cb: None | Callable = ctx.callback(INTERPRETER_CALLBACKS.WRAP_CALLBACK)
         if cb is not None:
@@ -188,7 +188,7 @@ class WrappedValue:
 
         runtimectx: InterpreterRuntimeCtx = get_interpreterruntimectx()
         # we need to keep a strong ref on things that have been proxied to recover the proxy via the cache or we could structure the cache to do this for us
-        runtimectx.register_proxied_value(self)
+        runtimectx().register_proxied_value(self)
 
     def unwrap(self):
         return self.value
@@ -267,7 +267,7 @@ def wrap(value: Any, /, *, provenance: ProvenanceRecord) -> WrappedValue:
     runtimectx: InterpreterRuntimeCtx = get_interpreterruntimectx()
 
     if ctx._with_provenance_tracking:
-        cached = runtimectx._known_wrappers.get(id(value))
+        cached = runtimectx()._known_wrappers.get(id(value))
         if cached is not None:
             potential_wrap = cached[0]()
             if potential_wrap is not None:
@@ -279,7 +279,7 @@ def wrap(value: Any, /, *, provenance: ProvenanceRecord) -> WrappedValue:
                     assert len(value) == len(potential_wrap.item_wrappers)
                 return potential_wrap
             else:
-                del runtimectx._known_wrappers[id(value)]
+                del runtimectx()._known_wrappers[id(value)]
         return WrappedValue(value, provenance=provenance)
     return value
 
@@ -714,11 +714,14 @@ _interpreterruntimectx = contextvars.ContextVar("interpreterruntimectx")
 
 # Sets the interpreter ctx
 def set_interpreterruntimectx(ctx) -> Any:
-    return _interpreterruntimectx.set(ctx)
+    ctx = ctx if type(ctx) != weakref.ReferenceType else ctx()
+    # return _interpreterruntimectx.set(ctx)
+    return _interpreterruntimectx.set(weakref.ref(ctx))
 
 
 # Returns the current interpreter ctx
 def get_interpreterruntimectx() -> InterpreterRuntimeCtx:
+    # return weakref.ref(_interpreterruntimectx.get())
     return _interpreterruntimectx.get()
 
 
@@ -1143,7 +1146,7 @@ class InterpreterFrame:
 
         ctx: InterpreterRuntimeCtx = get_interpreterruntimectx()
         file_name: None | str = self.code.co_filename
-        ctx.record_position(self.code, file_name, self.positions)
+        ctx().record_position(self.code, file_name, self.positions)
 
     def format_with_source(self) -> str:
         # todo: multiple lines in positions, underline, indent
@@ -1464,7 +1467,8 @@ def eval_exec_helper(
         res = _interpret_call(set_builtins, globals, bd)
         assert res is not INTERPRETER_SIGNALS.EXCEPTION_RAISED
 
-    module = runtimectx.peek_frame_stack().module
+    module = runtimectx().peek_frame_stack().module
+
 
     # execed code has no LOCALSPLUS but only NAMES...
     frame = InterpreterFrame(
@@ -1696,7 +1700,7 @@ def _getattr_lookaside(obj: Any, name: str, *maybe_default: Any):
     compilectx: InterpreterCompileCtx = get_interpretercompilectx()
 
     assert not isinstance(result, WrappedValue)
-    if result is not INTERPRETER_SIGNALS.EXCEPTION_RAISED or not isinstance(ctx.curexc, AttributeError):
+    if result is not INTERPRETER_SIGNALS.EXCEPTION_RAISED or not isinstance(ctx().curexc, AttributeError):
         if result is not INTERPRETER_SIGNALS.EXCEPTION_RAISED and compilectx._with_provenance_tracking:
             result = wrap_attribute(result, obj, name)
         return result
@@ -1707,7 +1711,7 @@ def _getattr_lookaside(obj: Any, name: str, *maybe_default: Any):
     obj_getattr = getattr(unwrap(obj), "__getattr__", null)
 
     if obj_getattr is not null:
-        ctx.curexc = None
+        ctx().curexc = None
         assert callable(obj_getattr)
         if compilectx._with_provenance_tracking:
             obj_getattr = wrap_attribute(obj_getattr, obj, wrap_const("__getattr__"))
@@ -1716,8 +1720,8 @@ def _getattr_lookaside(obj: Any, name: str, *maybe_default: Any):
         # result = wrap_attribute(unwrap(result), obj, name)
 
     # And finally if all else fails apply the default. (If provided.)
-    if result is INTERPRETER_SIGNALS.EXCEPTION_RAISED and isinstance(ctx.curexc, AttributeError) and maybe_default:
-        ctx.curexc = None
+    if result is INTERPRETER_SIGNALS.EXCEPTION_RAISED and isinstance(ctx().curexc, AttributeError) and maybe_default:
+        ctx().curexc = None
         (default,) = maybe_default
         return default
 
@@ -1748,7 +1752,7 @@ def _getitem_lookaside(obj, key, /):
 
 def _globals_lookaside() -> dict[str, Any]:
     runtimectx: InterpreterRuntimeCtx = get_interpreterruntimectx()
-    frame = runtimectx.frame_stack[-1]
+    frame = runtimectx().frame_stack[-1]
     return frame.globals
 
 
@@ -1849,7 +1853,7 @@ def _iter_lookaside(obj, *sentinel) -> Iterator | INTERPRETER_SIGNALS:
 
 def _locals_lookaside() -> dict[str, Any]:
     runtimectx: InterpreterRuntimeCtx = get_interpreterruntimectx()
-    frame = runtimectx.frame_stack[-1]
+    frame = runtimectx().frame_stack[-1]
     _locals = frame._locals
     u_locals = unwrap(_locals)
     for i, v in enumerate(frame.localsplus):
@@ -1888,7 +1892,8 @@ def _next_lookaside(iterator, default=_nil):
 
     if default is not _nil and res is INTERPRETER_SIGNALS.EXCEPTION_RAISED:
         runtimectx: InterpreterRuntimeCtx = get_interpreterruntimectx()
-        if isinstance(runtimectx._curexc, StopIteration):
+        if isinstance(runtimectx().curexc, StopIteration):
+            runtimectx().curexc = None
             res = default
     return res
 
@@ -1921,7 +1926,7 @@ def _super_lookaside(cls=Py_NULL(), obj=None):
     if cls is Py_NULL() and obj is None:
         runtimectx: InterpreterRuntimeCtx = get_interpreterruntimectx()
 
-        frame = runtimectx.frame_stack[-1]
+        frame = runtimectx().frame_stack[-1]
         self_name = frame.code.co_varnames[0]  # is this guaranteed to be self?
         self_idx = None
         class_idx = None
@@ -2505,8 +2510,8 @@ class MutMappingWrapperMethods(WrappedValue):
         res = _interpret_call(lambda d, k: d[k], self, key)
         if res is INTERPRETER_SIGNALS.EXCEPTION_RAISED:
             runtimectx: InterpreterRuntimeCtx = get_interpreterruntimectx()
-            if isinstance(runtimectx._curexc, KeyError):
-                runtimectx._curexc = None
+            if isinstance(runtimectx().curexc, KeyError):
+                runtimectx().curexc = None
                 if default is None:
                     res = wrap_const(None)
                 else:
@@ -2673,7 +2678,7 @@ def _collections_namedtuple_lookaside(
     if module is None:
         # To prevent taking module from the direct caller,
         # we use the module's name from the active frame
-        curr_frame = get_interpreterruntimectx().frame_stack[-1]
+        curr_frame = get_interpreterruntimectx()().frame_stack[-1]
         module = unwrap(curr_frame.globals).get("__name__", None)
         module = wrap_const(module)
     # }
@@ -2770,7 +2775,7 @@ def _tuple_new_provenance_tracking_lookaside(cls, iterable=(), /):
         while not done:
             wv = _interpret_call(lambda iterator: iterator.__next__(), iterator)
             if wv is INTERPRETER_SIGNALS.EXCEPTION_RAISED:
-                if isinstance(runtimectx.curexc, StopIteration):
+                if isinstance(runtimectx().curexc, StopIteration):
                     done = True
                 else:
                     return INTERPRETER_SIGNALS.EXCEPTION_RAISED
@@ -3041,7 +3046,7 @@ def globals_lookup(globals_dict: dict | WrappedValue, name: Any) -> Any | INTERP
 
     # here CPython subscripts without checking that it's a dict, so do we
     res = _interpret_call(lambda d, k: d[k], builtins, name)
-    if res is INTERPRETER_SIGNALS.EXCEPTION_RAISED and isinstance(runtimectx._curexc, KeyError):
+    if res is INTERPRETER_SIGNALS.EXCEPTION_RAISED and isinstance(runtimectx().curexc, KeyError):
         return do_raise(NameError(f"name '{unwrap(name)}' is not defined"))
 
     return res
@@ -3744,7 +3749,7 @@ def _list_to_tuple_intrinsic(tos):
 
 def _stopiteration_error_intrinsic(exc):
     runtimectx: InterpreterRuntimeCtx = get_interpreterruntimectx()
-    co_flags = runtimectx.frame_stack[-1].code.co_flags
+    co_flags = runtimectx().frame_stack[-1].code.co_flags
 
     assert wrapped_isinstance(exc, Exception)
     # CPython 3.12 asserts whether frame->owner == FRAME_OWNED_BY_GENERATOR
@@ -4123,10 +4128,10 @@ def _end_async_for_handler_3_10(
         exc_traceback = frame.interpreter_stack.pop()
         if exc_value != None:
             exc_value.__traceback__ = exc_traceback
-        assert runtimectx.exception_stack
+        assert runtimectx().exception_stack
         # CPython sets exc_info->exc_type/value/traceback
         # see RuntimeCtx inititalization of exception_stack for more info
-        runtimectx.exception_stack[-1] = exc_value  # replace the exc_info
+        runtimectx().exception_stack[-1] = exc_value  # replace the exc_info
         # Python 3.10 has `continue` here, but there is no code except the else
         stack.pop()
         return
@@ -4135,7 +4140,7 @@ def _end_async_for_handler_3_10(
         tb = stack.pop()
         assert isinstance(val, BaseException)
         val.__traceback__ = tb
-        runtimectx.curexc = val
+        runtimectx().curexc = val
         return INTERPRETER_SIGNALS.EXCEPTION_RAISED
 
 
@@ -4161,7 +4166,7 @@ def _end_async_for_handler_3_11(
         stack.pop()
         return
     else:
-        runtimectx.curexc = val
+        runtimectx().curexc = val
         return INTERPRETER_SIGNALS.EXCEPTION_RAISED
 
 
@@ -4245,7 +4250,8 @@ def _for_iter_handler(
 
     if r is INTERPRETER_SIGNALS.EXCEPTION_RAISED:
         ctx = get_interpreterruntimectx()
-        if isinstance(ctx.curexc, StopIteration):
+        if isinstance(ctx().curexc, StopIteration):
+            ctx().curexc = None
             if sys.version_info >= (3, 12):
                 # 3.12 uses jumps relative to the next instruction offset and does not pop here
                 #      instead it pushes a fake value?!
@@ -5437,13 +5443,13 @@ def do_raise(exc: Any = Py_NULL(), cause: Any = Py_NULL()) -> Literal[INTERPRETE
     runtimectx: InterpreterRuntimeCtx = get_interpreterruntimectx()
     if exc is Py_NULL():
         # Re-raise
-        assert runtimectx.exception_stack
-        value = runtimectx.exception_stack[0]
+        assert runtimectx().exception_stack
+        value = runtimectx().exception_stack[0]
         if value == None:
             return do_raise(RuntimeError("No active exception to reraise"))
         assert isinstance(value, BaseException)
         # check for cause being PY_NULL? Python does not do this, but it would seem to be a bug
-        runtimectx.curexc = value
+        runtimectx().curexc = value
         return INTERPRETER_SIGNALS.EXCEPTION_RAISED
 
     if isinstance(exc, type) and issubclass(exc, BaseException):
@@ -5488,7 +5494,7 @@ def do_raise(exc: Any = Py_NULL(), cause: Any = Py_NULL()) -> Literal[INTERPRETE
 
         value.__cause__ = fixed_cause
 
-    runtimectx.curexc = value
+    runtimectx().curexc = value
     return INTERPRETER_SIGNALS.EXCEPTION_RAISED
 
 
@@ -5571,7 +5577,7 @@ def _reraise_handler_3_10(
     assert isinstance(val, BaseException)
     runtimectx: InterpreterRuntimeCtx = get_interpreterruntimectx()
     val.__traceback__ = tb
-    runtimectx.curexc = val
+    runtimectx().curexc = val
     return INTERPRETER_SIGNALS.EXCEPTION_RAISED
 
 
@@ -5591,7 +5597,7 @@ def _reraise_handler_3_11(
 
     runtimectx: InterpreterRuntimeCtx = get_interpreterruntimectx()
     assert isinstance(val, BaseException)
-    runtimectx.curexc = val
+    runtimectx().curexc = val
     return INTERPRETER_SIGNALS.EXCEPTION_RAISED
 
 
@@ -6057,7 +6063,7 @@ def _unpack_sequence_handler(inst: dis.Instruction, /, stack: InterpreterStack, 
     for _ in range(count):
         v = _interpret_call(next, seq_iter)
         if v is INTERPRETER_SIGNALS.EXCEPTION_RAISED:
-            if isinstance(runtimectx._curexc, StopIteration):
+            if isinstance(runtimectx().curexc, StopIteration):
                 return do_raise(ValueError(f"not enough values to unpack (expected {count}, got {len(values)})"))
             else:
                 return v
@@ -6066,8 +6072,8 @@ def _unpack_sequence_handler(inst: dis.Instruction, /, stack: InterpreterStack, 
 
     v = _interpret_call(next, seq_iter)
     if v is INTERPRETER_SIGNALS.EXCEPTION_RAISED:
-        if isinstance(runtimectx._curexc, StopIteration):
-            runtimectx._curexc = None
+        if isinstance(runtimectx().curexc, StopIteration):
+            runtimectx().curexc = None
         else:
             return v
     else:
@@ -6128,9 +6134,9 @@ def _send_handler(
     res = _interpret_call_with_unwrapping(impl)
     if res is INTERPRETER_SIGNALS.EXCEPTION_RAISED:
         runtimectx: InterpreterRuntimeCtx = get_interpreterruntimectx()
-        if isinstance(runtimectx.curexc, StopIteration):
-            retval = runtimectx.curexc.value
-            runtimectx.curexc = None
+        if isinstance(runtimectx().curexc, StopIteration):
+            retval = runtimectx().curexc.value
+            runtimectx().curexc = None
             if sys.version_info < (3, 12):
                 stack.pop()  # remove generator
                 stack.append(retval)
@@ -6195,10 +6201,10 @@ def _yield_from_handler(
     res = _interpret_call_with_unwrapping(impl)
     if res is INTERPRETER_SIGNALS.EXCEPTION_RAISED:
         runtimectx: InterpreterRuntimeCtx = get_interpreterruntimectx()
-        if isinstance(runtimectx.curexc, StopIteration):
+        if isinstance(runtimectx().curexc, StopIteration):
             stack.pop()  # remove generator
-            stack.append(runtimectx.curexc.value)
-            runtimectx.curexc = None
+            stack.append(runtimectx().curexc.value)
+            runtimectx().curexc = None
             return None
         else:
             return res  # propagate exception
@@ -6240,9 +6246,9 @@ def make_generator(
                     msg = f"Encountered exception {type(e).__name__}: {e}"
                     raise InterpreterError(msg) from e
                 if status is INTERPRETER_SIGNALS.EXCEPTION_RAISED:
-                    e = runtimectx.curexc
+                    e = runtimectx().curexc
                     assert isinstance(e, BaseException)
-                    runtimectx.curexc = None
+                    runtimectx().curexc = None
                     if isinstance(e, StopIteration):
                         return unwrap(e.value)
                     raise e
@@ -6270,9 +6276,9 @@ def make_async_generator(
                     msg = f"Encountered exception {type(e).__name__}: {e}"
                     raise InterpreterError(msg) from e
                 if status is INTERPRETER_SIGNALS.EXCEPTION_RAISED:
-                    e = runtimectx.curexc
+                    e = runtimectx().curexc
                     assert isinstance(e, BaseException)
-                    runtimectx.curexc = None
+                    runtimectx().curexc = None
                     if isinstance(e, StopIteration):
                         return
                     raise e
@@ -6300,9 +6306,9 @@ def make_coroutine(
                     msg = f"Encountered exception {type(e).__name__}: {e}"
                     raise InterpreterError(msg) from e
                 if status is INTERPRETER_SIGNALS.EXCEPTION_RAISED:
-                    e = runtimectx.curexc
+                    e = runtimectx().curexc
                     assert isinstance(e, BaseException)
-                    runtimectx.curexc = None
+                    runtimectx().curexc = None
                     if isinstance(e, StopIteration):
                         return unwrap(e.value)
                     raise e
@@ -6353,11 +6359,11 @@ def _interpret_call(fn: Callable, /, *args, **kwargs) -> Any | INTERPRETER_SIGNA
     runtimectx: InterpreterRuntimeCtx = get_interpreterruntimectx()
 
     # TODO: Implement generics and fix WrappedValue[T] everywhere.
-    runtimectx.record_interpreter_call(fn)
+    runtimectx().record_interpreter_call(fn)
     rval = _call_dispatch(compilectx, runtimectx, fn, *args, **kwargs)  # type: ignore
     if compilectx._with_provenance_tracking:
         assert isinstance(rval, (INTERPRETER_SIGNALS, WrappedValue)), f"return {rval} unexpected calling {unwrap(fn)}"
-    runtimectx.record_interpreter_return(fn, rval)  # type: ignore
+    runtimectx().record_interpreter_return(fn, rval)  # type: ignore
 
     return rval
 
@@ -6514,7 +6520,7 @@ def _call_dispatch(
         # Happens with sharp edges, for example
         return lookaside_fn
     if lookaside_fn:
-        runtimectx.record_lookaside(lookaside_fn)
+        runtimectx().record_lookaside(lookaside_fn)
         res = lookaside_fn(*args, **kwargs)
         return res
 
@@ -6538,10 +6544,10 @@ def _call_dispatch(
         args_ = tuple(unwrap(a) for a in args)
         kwargs_ = {unwrap(k): unwrap(v) for k, v in kwargs.items()}
         try:
-            runtimectx.record_opaque_call(fn)
+            runtimectx().record_opaque_call(fn)
             opaque_result: Any = fn(*args_, **kwargs_)
         except Exception as e:
-            runtimectx.curexc = e
+            runtimectx().curexc = e
             return INTERPRETER_SIGNALS.EXCEPTION_RAISED
 
         if compilectx._with_provenance_tracking:
@@ -6792,7 +6798,7 @@ def _run_frame(
     send_value: Any = Py_NULL(),
 ):
     # Pushes the current stack frame for the current function
-    with runtimectx.push_frame_stack(frame):
+    with runtimectx().push_frame_stack(frame):
         stack: InterpreterStack = frame.interpreter_stack
         if send_value != Py_NULL():
             with stack.set_cur_instruction(PseudoInst.SEND):
@@ -6819,7 +6825,7 @@ def _run_frame(
             # Updates the stack frame to the current position
             # TODO maybe also have inst_ptr?
             frame.nexti(inst)
-            runtimectx.record_interpreted_instruction(inst)
+            runtimectx().record_interpreted_instruction(inst)
             skip_stack_effect_check: bool = False  # the exception handling will change the stack wildly
             stack_size_before_handler: int = len(stack)
 
@@ -6830,13 +6836,13 @@ def _run_frame(
                 stack=frame.interpreter_stack,
                 globals_dict=frame.globals,
                 try_stack=frame.try_stack,
-                exception_stack=runtimectx.exception_stack,
+                exception_stack=runtimectx().exception_stack,
                 co=frame.code,
                 frame=frame,
             )
             if interpretation_result is INTERPRETER_SIGNALS.EXCEPTION_RAISED:
-                e = runtimectx.curexc
-                runtimectx.curexc = None
+                e = runtimectx().curexc
+                runtimectx().curexc = None
                 assert isinstance(e, BaseException)
                 current_exception = e
 
@@ -6880,10 +6886,10 @@ def _run_frame(
                                 exc_traceback = frame.interpreter_stack.pop()
                             if exc_value != None:
                                 exc_value.__traceback__ = exc_traceback
-                            assert runtimectx.exception_stack
+                            assert runtimectx().exception_stack
                             # CPython sets exc_info->exc_type/value/traceback
                             # see RuntimeCtx inititalization of exception_stack for more info
-                            runtimectx.exception_stack[-1] = exc_value  # replace the exc_info
+                            runtimectx().exception_stack[-1] = exc_value  # replace the exc_info
                             # Python 3.10 has `continue` here, but there is no code except the else
                         else:
                             # There are actually only these two PyTryBlock types in 3.10
@@ -6898,10 +6904,10 @@ def _run_frame(
                             frame.try_stack.append(
                                 PyTryBlock(PyTryBlock.EXCEPT_HANDLER_TYPE, frame.lasti, len(frame.interpreter_stack))
                             )
-                            assert runtimectx.exception_stack
+                            assert runtimectx().exception_stack
                             # CPython sreads exc_info->exc_type/value/traceback
                             # see RuntimeCtx inititalization of exception_stack for more info
-                            exc = runtimectx.exception_stack[-1]
+                            exc = runtimectx().exception_stack[-1]
                             with frame.interpreter_stack.set_cur_instruction(PseudoInst.EXCEPTION_HANDLER):
                                 frame.interpreter_stack.append(exc.__traceback__ if exc is not None else None)
                                 frame.interpreter_stack.append(exc)
@@ -6912,7 +6918,7 @@ def _run_frame(
 
                             # CPython sets exc_info->exc_type/value/traceback here
                             # see RuntimeCtx initialization of exception_stack for more info
-                            runtimectx.exception_stack[-1] = current_exception
+                            runtimectx().exception_stack[-1] = current_exception
                             with frame.interpreter_stack.set_cur_instruction(PseudoInst.EXCEPTION_HANDLER):
                                 frame.interpreter_stack.append(
                                     current_exception.__traceback__ if exc is not None else None
@@ -6930,7 +6936,7 @@ def _run_frame(
                     python_frame = frame.get_or_make_python_frame()
                     tb = TracebackType(e.__traceback__, python_frame, python_frame.f_lasti, python_frame.f_lineno)
                     e = e.with_traceback(tb)
-                    runtimectx.curexc = e
+                    runtimectx().curexc = e
                     return INTERPRETER_SIGNALS.EXCEPTION_RAISED, INTERPRETER_SIGNALS.EXCEPTION_RAISED
 
             # TODO Improve this error message
@@ -7071,6 +7077,7 @@ def interpret(
     @functools.wraps(fn)
     def fn_(*args, **kwargs) -> Any:
         runtimectx: InterpreterRuntimeCtx = InterpreterRuntimeCtx(debug_log=debug_log, record_history=record_history)
+        # runtimectx = weakref.ref(runtimectx_)
 
         with interpreter_ctx(compilectx, runtimectx):
             try:
