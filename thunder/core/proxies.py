@@ -143,7 +143,7 @@ class Proxy(VariableInterface, ProxyInterface):
         self._name = make_proxy_name(name=name, prefix=prefix)
         self._has_weak_name: bool = name is None
         self.history = history
-        self._tags = set(tags) if tags is not None else set()
+        self._tags = tags if tags is not None else set()
 
     @property
     def tags(self) -> set:
