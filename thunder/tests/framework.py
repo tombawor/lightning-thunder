@@ -116,7 +116,7 @@ def assert_closer(*, reference, candidate, competitor, comparator):
             competitor_dist = torch.abs(ref - com)
             minimum_dist = torch.minimum(candidate_dist, competitor_dist)
 
-            signed_minimum_dist = torch.where(candidate_dist < 0, -minimum_dist, minimum_dist)
+            signed_minimum_dist = torch.where(ref > cand, -minimum_dist, minimum_dist)
             target = ref + signed_minimum_dist
 
             comparator(cand, target, check_dtype=False)
@@ -147,18 +147,6 @@ class TestExecutor:
     # NOTE This method should be overridden by subclasses
     def executors_list(self) -> list[extend.Executor]:
         return []
-
-    @singledispatchmethod
-    def make_callable_legacy(self, fn, **kwargs):
-        assert kwargs.pop("disable_preprocessing", True)
-        assert kwargs.pop("disable_torch_autograd_support", True)
-        return thunder.compile(
-            fn,
-            executors_list=self.executors_list(),
-            disable_preprocessing=True,
-            disable_torch_autograd_support=True,
-            **kwargs,
-        )
 
     @singledispatchmethod
     def make_callable(self, fn, **kwargs):
